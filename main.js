@@ -445,6 +445,15 @@ scene.add(source2Mesh);
 const source1Pos = new THREE.Vector3();
 const source2Pos = new THREE.Vector3();
 
+// Auto-move toggles
+let source1Auto = false;
+let source2Auto = false;
+
+// Hard-coded velocities (you can tweak these)
+const source1Velocity = new THREE.Vector3(1.6, 0.3, 1.0);
+const source2Velocity = new THREE.Vector3(-1.2, 0.4, -1.4);
+
+
 function updateSource1FromSliders() {
   const sx = Number(source1XSlider.value);
   const sy = Number(source1YSlider.value);
@@ -585,6 +594,9 @@ const source2XSlider = document.getElementById("source2XSlider");
 const source2YSlider = document.getElementById("source2YSlider");
 const source2ZSlider = document.getElementById("source2ZSlider");
 
+const source1AutoToggle = document.getElementById("source1AutoToggle");
+const source2AutoToggle = document.getElementById("source2AutoToggle");
+
 const labelsDiv = document.getElementById("labels");
 
 let densitySliderVal = Number(densitySlider.value);
@@ -594,6 +606,45 @@ let freq2SliderVal = Number(freq2Slider.value);
 let freq1 = mapSliderToFrequency(freq1SliderVal);
 let freq2 = mapSliderToFrequency(freq2SliderVal);
 
+
+function updateAutoSource(dt, pos, vel) {
+  // How much random steering per second
+  const wanderStrength = 1.5;    // tweakable
+  const maxSpeed = 20.0;          // units per second, tweakable
+
+  // Smoothly perturb the velocity each frame
+  vel.x += (Math.random() - 0.5) * wanderStrength * dt;
+  vel.y += (Math.random() - 0.5) * wanderStrength * dt;
+  vel.z += (Math.random() - 0.5) * wanderStrength * dt;
+
+  // Clamp speed for smoothness
+  const speed = vel.length();
+  if (speed > maxSpeed) {
+    vel.multiplyScalar(maxSpeed / speed);
+  }
+
+  // Move the source
+  pos.addScaledVector(vel, dt);
+
+  // Bounce inside bounds
+  ["x", "y", "z"].forEach((axis) => {
+    const min = boundsMin[axis];
+    const max = boundsMax[axis];
+    if (pos[axis] < min) {
+      pos[axis] = min;
+      vel[axis] = Math.abs(vel[axis]);
+    } else if (pos[axis] > max) {
+      pos[axis] = max;
+      vel[axis] = -Math.abs(vel[axis]);
+    }
+  });
+}
+
+// Inverse mapping: world → slider value [-100, 100]
+function mapWorldToSlider(v, min, max) {
+  const t = (v - min) / (max - min); // 0..1
+  return t * 200 - 100;              // 0→-100, 0.5→0, 1→100
+}
 
 
 const materialSelect = document.getElementById("materialSelect");
@@ -686,6 +737,15 @@ source2XSlider.addEventListener("input", () => { updateSource2FromSliders(); upd
 source2YSlider.addEventListener("input", () => { updateSource2FromSliders(); updateLabels(); });
 source2ZSlider.addEventListener("input", () => { updateSource2FromSliders(); updateLabels(); });
 
+source1AutoToggle.addEventListener("change", () => {
+  source1Auto = source1AutoToggle.checked;
+});
+
+source2AutoToggle.addEventListener("change", () => {
+  source2Auto = source2AutoToggle.checked;
+});
+
+
 // Initial setup (before GLB bounds override)
 updateFieldCenterFromSliders();
 updateFieldSizeFromSliders();
@@ -698,11 +758,38 @@ updateLabels();
 // Animation
 // -------------------------------
 const clock = new THREE.Clock();
+let lastTime = 0;
 
 function animate() {
   requestAnimationFrame(animate);
 
   const t = clock.getElapsedTime();
+
+  let dt = t - lastTime;
+  lastTime = t;
+  // Clamp dt to avoid huge jumps if tab was inactive
+  dt = Math.min(dt, 0.05);
+
+  // Auto-move sources if toggled
+  if (source1Auto) {
+    updateAutoSource(dt, source1Pos, source1Velocity);
+    source1Mesh.position.copy(source1Pos);
+
+    // keep sliders in sync
+    source1XSlider.value = mapWorldToSlider(source1Pos.x, boundsMin.x, boundsMax.x).toFixed(0);
+    source1YSlider.value = mapWorldToSlider(source1Pos.y, boundsMin.y, boundsMax.y).toFixed(0);
+    source1ZSlider.value = mapWorldToSlider(source1Pos.z, boundsMin.z, boundsMax.z).toFixed(0);
+  }
+
+  if (source2Auto) {
+    updateAutoSource(dt, source2Pos, source2Velocity);
+    source2Mesh.position.copy(source2Pos);
+
+    // keep sliders in sync
+    source2XSlider.value = mapWorldToSlider(source2Pos.x, boundsMin.x, boundsMax.x).toFixed(0);
+    source2YSlider.value = mapWorldToSlider(source2Pos.y, boundsMin.y, boundsMax.y).toFixed(0);
+    source2ZSlider.value = mapWorldToSlider(source2Pos.z, boundsMin.z, boundsMax.z).toFixed(0);
+  }
 
   if (material) {
     const lambdaVis1 = getVisualLambdaFromFrequency(freq1);

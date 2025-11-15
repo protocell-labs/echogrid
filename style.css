@@ -75,6 +75,10 @@
    /* fixed width label */
  }
 
+ .slider-row input[type="checkbox"] {
+  flex: 0 0 auto;
+}
+
  .slider-row input[type="range"] {
    flex: 1;
  }
