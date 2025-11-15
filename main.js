@@ -325,7 +325,7 @@ const vertexShader = `
     vec3 d = pos - src;
     float r = length(d) + 1e-6;
     float phase = k * r - omega * t;
-    return sin(phase) / (1.0 + 0.3 * r);
+    return sin(phase) / (1.0 + 0.05 * r);
   }
 
   void main() {
