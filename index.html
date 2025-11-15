@@ -24,9 +24,18 @@
 
 </head>
 
-<body>
-  <!--script src="./palettes.js"></script-->
-  <script type="module" src="main.js"></script>
+<div id="gui-container">
+  <label for="material-select">MODEL MATERIAL</label>
+  <select id="material-select">
+    <option value="grid" selected>Grid - solid</option>
+    <option value="gridTransparent">Grid - transparent</option>
+    <option value="gridPoints">Grid - point cloud</option>
+  </select>
+</div>
+
+
+<!--script src="./palettes.js"></script-->
+<script type="module" src="main.js"></script>
 </body>
 
 </html>

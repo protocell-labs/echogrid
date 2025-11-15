@@ -19,6 +19,14 @@ let mixer = null;      // for animations from the GLTF, if any
 let model = null;      // reference to the loaded model
 
 
+// Materials + mode
+let gridMaterial;
+let gridWireMaterial;
+let gridPointsMaterial;
+let solidMaterial;
+let basicMaterial;
+let currentMaterialMode = 'grid';
+
 
 
 
@@ -28,7 +36,7 @@ function createGridMaterial() {
         uniforms: {
             uLineColor: { value: new THREE.Color(0x00ff00) }, // neon green
             uBgColor: { value: new THREE.Color(0x000000) }, // black
-            uScale: { value: 0.1 },   // grid density
+            uScale: { value: 0.2 },   // grid density
             uThickness: { value: 0.02 }   // line thickness
         },
         vertexShader: `
@@ -94,6 +102,169 @@ function createGridMaterial() {
 
 
 
+function createGridWireMaterial() {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uLineColor: { value: new THREE.Color(0x00ff00) }, // neon green
+            uScale: { value: 0.2 },   // grid density
+            uThickness: { value: 0.02 }   // line thickness
+        },
+        vertexShader: `
+            varying vec3 vWorldPos;
+            varying vec3 vWorldNormal;
+
+            void main() {
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                vWorldPos = worldPos.xyz;
+
+                vWorldNormal = normalize(mat3(modelMatrix) * normal);
+
+                gl_Position = projectionMatrix * viewMatrix * worldPos;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vWorldPos;
+            varying vec3 vWorldNormal;
+
+            uniform vec3 uLineColor;
+            uniform float uScale;
+            uniform float uThickness;
+
+            void main() {
+                // dominant-axis planar mapping (same as solid grid)
+                vec3 n  = normalize(vWorldNormal);
+                vec3 an = abs(n);
+                vec2 coord;
+
+                if (an.y >= an.x && an.y >= an.z) {
+                    coord = vWorldPos.xz;
+                } else if (an.x >= an.y && an.x >= an.z) {
+                    coord = vWorldPos.zy;
+                } else {
+                    coord = vWorldPos.xy;
+                }
+
+                coord *= uScale;
+
+                vec2 grid = abs(fract(coord) - 0.5);
+                float distToLine = min(grid.x, grid.y);
+
+                // line mask
+                float mask = step(distToLine, uThickness);
+
+                // neon lines with alpha only on lines
+                vec3 color = uLineColor;
+                float alpha = mask;
+
+                if (alpha <= 0.0) discard; // optional: fully discard non-line fragments
+
+                gl_FragColor = vec4(color, alpha);
+            }
+        `,
+        transparent: true,                  // allow alpha
+        depthWrite: false,                  // avoid depth-writing issues with transparency
+        side: THREE.DoubleSide,             // see the wires from inside & outside
+        blending: THREE.AdditiveBlending    // nice glow when lines overlap
+    });
+}
+
+
+
+
+function createGridPointsMaterial() {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uPointColor: { value: new THREE.Color(0x00ff00) }, // neon green
+            uScale: { value: 0.75 },   // higher = denser points
+            uRadius: { value: 0.10 }    // point size inside each cell (0–0.5)
+        },
+        vertexShader: `
+            varying vec3 vWorldPos;
+            varying vec3 vWorldNormal;
+
+            void main() {
+                vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                vWorldPos = worldPos.xyz;
+
+                vWorldNormal = normalize(mat3(modelMatrix) * normal);
+
+                gl_Position = projectionMatrix * viewMatrix * worldPos;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vWorldPos;
+            varying vec3 vWorldNormal;
+
+            uniform vec3 uPointColor;
+            uniform float uScale;
+            uniform float uRadius;
+
+            void main() {
+                // dominant-axis planar mapping (same as the other materials)
+                vec3 n  = normalize(vWorldNormal);
+                vec3 an = abs(n);
+                vec2 coord;
+
+                if (an.y >= an.x && an.y >= an.z) {
+                    coord = vWorldPos.xz;
+                } else if (an.x >= an.y && an.x >= an.z) {
+                    coord = vWorldPos.zy;
+                } else {
+                    coord = vWorldPos.xy;
+                }
+
+                // Scale = how dense the grid is
+                coord *= uScale;
+
+                // Local coords inside each cell, centered at 0,0
+                vec2 local = fract(coord) - 0.5;
+
+                // Distance from cell center -> roundish dots
+                float dist = length(local);
+
+                // Mask: only keep fragments close enough to cell centers
+                float mask = step(dist, uRadius);
+
+                if (mask <= 0.0) discard;
+
+                vec3 color = uPointColor;
+                gl_FragColor = vec4(color, mask);
+            }
+        `,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending
+    });
+}
+
+
+
+
+function applyMaterialMode(mode) {
+    currentMaterialMode = mode;
+
+    if (!model) return; // model not loaded yet
+
+    model.traverse((child) => {
+        if (!child.isMesh) return;
+
+        switch (mode) {
+            case 'grid':
+                if (gridMaterial) child.material = gridMaterial;
+                break;
+
+            case 'gridTransparent':
+                if (gridWireMaterial) child.material = gridWireMaterial;
+                break;
+
+            case 'gridPoints':
+                if (gridPointsMaterial) child.material = gridPointsMaterial;
+                break;
+        }
+    });
+}
+
 
 
 
@@ -154,9 +325,39 @@ function init() {
 
 
 
-    // === GRID MATERIAL SETUP (shader-based, world-space grid) ===
-    const gridMaterial = createGridMaterial();
+    // === GRID MATERIAL SETUP ===
+    gridMaterial = createGridMaterial();
+    gridWireMaterial = createGridWireMaterial();
+    gridPointsMaterial = createGridPointsMaterial();
 
+    // shared color for all modes
+    const neonColor = new THREE.Color(0x00ff00);
+
+    // Solid unlit neon
+    solidMaterial = new THREE.MeshBasicMaterial({
+        color: neonColor
+    });
+
+    // Lit neon (responds to lights, in case you add them later)
+    basicMaterial = new THREE.MeshStandardMaterial({
+        color: neonColor,
+        metalness: 0.1,
+        roughness: 0.4
+    });
+
+
+
+
+    // === GUI WIRING ===
+    const materialSelect = document.getElementById('material-select');
+    if (materialSelect) {
+        materialSelect.value = currentMaterialMode;
+
+        materialSelect.addEventListener('change', (event) => {
+            const mode = event.target.value;
+            applyMaterialMode(mode);
+        });
+    }
 
 
     // Clock for animations
@@ -174,14 +375,19 @@ function init() {
             model = gltf.scene;
             model.traverse((child) => {
                 if (child.isMesh) {
-                    // Turn off shadows
                     child.castShadow = false;
                     child.receiveShadow = false;
 
-                    // Apply the procedural grid material
+                    // keep a reference to the original GLTF material
+                    child.userData.originalMaterial = child.material;
+
+                    // default material (will get overridden by applyMaterialMode anyway)
                     child.material = gridMaterial;
                 }
             });
+
+            // Apply whatever mode is currently selected in the GUI
+            applyMaterialMode(currentMaterialMode);
 
 
             // Position/scale your model so it looks good
