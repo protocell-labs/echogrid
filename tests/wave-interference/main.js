@@ -34,6 +34,17 @@ const camera = new THREE.PerspectiveCamera(
 camera.position.set(0, 0, 14);
 camera.lookAt(0, 0, 0);
 
+// ---------- Orbit Controls ----------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;     // smooth movement
+controls.dampingFactor = 0.05;
+controls.screenSpacePanning = false;
+controls.enablePan = false;        // optional: lock panning
+controls.minDistance = 5;
+controls.maxDistance = 60;
+controls.maxPolarAngle = Math.PI * 0.48;  // prevent camera going under scene
+
+
 // simple lights (mainly for the grid; points use custom shader)
 const light = new THREE.DirectionalLight(0xffffff, 1.0);
 light.position.set(5, 10, 5);
@@ -446,6 +457,7 @@ window.addEventListener('resize', onWindowResize);
 function animate() {
   requestAnimationFrame(animate);
   stepSimulation();
+  controls.update(); 
   renderer.render(scene, camera);
 }
 
