@@ -10,15 +10,17 @@ import { GLTFLoader } from "GLTFLoader";
 const F_MIN = 3000;
 const F_MAX = 3000000000;
 
-// Default bounds before GLB is loaded (a safe cube around origin)
+// Default bounds before GLB is loaded
 const DEFAULT_RANGE = 6;
 
-// Bounds within which we map sliders for field center & sources
 const boundsMin = new THREE.Vector3(-DEFAULT_RANGE, -DEFAULT_RANGE, -DEFAULT_RANGE);
 const boundsMax = new THREE.Vector3( DEFAULT_RANGE,  DEFAULT_RANGE,  DEFAULT_RANGE);
 const boundsCenter = new THREE.Vector3(0, 0, 0);
 
-// density 1–5 → points per unit
+let hasGlbBounds = false;
+let glbMaxSize = 0; // largest dimension of GLB bbox
+let cityMesh = null; // GLB mesh used for occlusion
+
 function mapDensityToPPU(densityValue) {
   const base = 1.0;
   const step = 0.5; // 1→1.0, 2→1.5, 3→2.0, 4→2.5, 5→3.0
@@ -44,6 +46,19 @@ function getVisualLambdaFromFrequency(f) {
 function mapSliderToBounds(v, min, max) {
   const t = (v + 100) / 200; // -100→0, 0→0.5, 100→1
   return min + (max - min) * t;
+}
+
+// size vs wavelength → transmit / absorb / reflect
+function classifyInteraction(objectSize, lambdaVis) {
+  const ratio = objectSize / lambdaVis;
+
+  if (ratio < 0.1) {
+    return { transmit: 0.9, absorb: 0.1, reflect: 0.0 };
+  } else if (ratio < 2.0) {
+    return { transmit: 0.3, absorb: 0.2, reflect: 0.5 };
+  } else {
+    return { transmit: 0.1, absorb: 0.6, reflect: 0.3 };
+  }
 }
 
 // -------------------------------
@@ -91,7 +106,10 @@ let totalPoints = 0;
 let points = null;
 let geometry = null;
 let material = null;
+let occlusion1 = null; // Float32Array per point for source 1
+let occlusion2 = null; // Float32Array per point for source 2;
 
+// Vertex shader: wave + per-point occlusion
 const vertexShader = `
   uniform float uTime;
   uniform vec3  uSource1Pos;
@@ -101,6 +119,9 @@ const vertexShader = `
   uniform float uK2;
   uniform float uOmega2;
   uniform float uPointSize;
+
+  attribute float aOcc1;
+  attribute float aOcc2;
 
   varying float vAmplitude;
 
@@ -116,11 +137,15 @@ const vertexShader = `
 
     float A1 = ampFromSource(p, uSource1Pos, uK1, uOmega1, uTime);
     float A2 = ampFromSource(p, uSource2Pos, uK2, uOmega2, uTime);
-    float A  = A1 + A2;
 
+    // Apply per-point occlusion factors
+    A1 *= aOcc1;
+    A2 *= aOcc2;
+
+    float A = A1 + A2;
     vAmplitude = A;
 
-    float amplitudeScale = 0.4;
+    float amplitudeScale = 0.6; // a bit larger for visibility
     p.y += A * amplitudeScale;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
@@ -128,16 +153,29 @@ const vertexShader = `
   }
 `;
 
+// Fragment shader: vivid red/blue based on amplitude
 const fragmentShader = `
   precision highp float;
   varying float vAmplitude;
 
   void main() {
-    float a = clamp(vAmplitude * 1.5, -1.0, 1.0);
+    // Boost contrast for small amplitudes
+    float a = clamp(vAmplitude * 8.0, -1.0, 1.0);
+
     float r = max(0.0,  a);
     float b = max(0.0, -a);
-    float g = 0.2 * (1.0 - abs(a));
-    gl_FragColor = vec4(r, g, b, 1.0);
+    float g = 0.15 + 0.35 * (1.0 - abs(a));
+
+    vec3 color = vec3(r, g, b);
+    float mag = max(max(color.r, color.g), color.b);
+    if (mag < 0.001) {
+      color = vec3(0.2, 0.2, 0.2);
+    } else {
+      color /= mag;
+      color *= 0.9;
+    }
+
+    gl_FragColor = vec4(color, 1.0);
   }
 `;
 
@@ -158,6 +196,8 @@ function buildPointCloud() {
   totalPoints = resX * resY * resZ;
 
   const positions = new Float32Array(totalPoints * 3);
+  occlusion1 = new Float32Array(totalPoints);
+  occlusion2 = new Float32Array(totalPoints);
 
   let i = 0;
   for (let ix = 0; ix < resX; ix++) {
@@ -171,6 +211,10 @@ function buildPointCloud() {
         positions[idx]     = x;
         positions[idx + 1] = y;
         positions[idx + 2] = z;
+
+        occlusion1[i] = 1.0; // default: not blocked
+        occlusion2[i] = 1.0;
+
         i++;
       }
     }
@@ -178,6 +222,8 @@ function buildPointCloud() {
 
   geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("aOcc1",    new THREE.BufferAttribute(occlusion1, 1));
+  geometry.setAttribute("aOcc2",    new THREE.BufferAttribute(occlusion2, 1));
 
   material = new THREE.ShaderMaterial({
     uniforms: {
@@ -245,7 +291,74 @@ function updateSource2FromSliders() {
 }
 
 // -------------------------------
-// Optional GLB (for bounds + visuals)
+// Occlusion using GLB mesh (CPU precompute)
+// -------------------------------
+const raycaster = new THREE.Raycaster();
+const tmpPos = new THREE.Vector3();
+const tmpDir = new THREE.Vector3();
+
+function recomputeOcclusionForSource(sourcePos, occArray, freq) {
+  if (!geometry || !cityMesh) return;
+
+  const positions = geometry.attributes.position.array;
+  const numPoints = positions.length / 3;
+
+  const lambdaVis = getVisualLambdaFromFrequency(freq);
+  let transmit = 1.0;
+
+  if (hasGlbBounds && glbMaxSize > 0) {
+    const intr = classifyInteraction(glbMaxSize, lambdaVis);
+    transmit = intr.transmit;
+  }
+
+  for (let i = 0; i < numPoints; i++) {
+    const idx = i * 3;
+    tmpPos.set(positions[idx], positions[idx + 1], positions[idx + 2]);
+
+    tmpDir.subVectors(tmpPos, sourcePos);
+    const dist = tmpDir.length();
+    if (dist < 1e-4) {
+      occArray[i] = 1.0;
+      continue;
+    }
+    tmpDir.divideScalar(dist);
+
+    raycaster.set(sourcePos, tmpDir);
+    raycaster.far = dist - 1e-3;
+
+    const hits = raycaster.intersectObject(cityMesh, true);
+
+    if (hits.length > 0) {
+      occArray[i] = transmit; // attenuated
+    } else {
+      occArray[i] = 1.0; // clear LOS
+    }
+  }
+
+  geometry.attributes.aOcc1.needsUpdate = true;
+  geometry.attributes.aOcc2.needsUpdate = true;
+}
+
+function recomputeOcclusion() {
+  if (!geometry || !cityMesh) return;
+  recomputeOcclusionForSource(source1Pos, occlusion1, freq1);
+  recomputeOcclusionForSource(source2Pos, occlusion2, freq2);
+}
+
+// simple debounce so we don't recompute on every tiny slider move
+let occlusionDirty = false;
+function scheduleOcclusionRecompute() {
+  if (!cityMesh || !geometry) return;
+  if (occlusionDirty) return;
+  occlusionDirty = true;
+  setTimeout(() => {
+    recomputeOcclusion();
+    occlusionDirty = false;
+  }, 150);
+}
+
+// -------------------------------
+// Optional GLB (for bounds + visuals + occlusion)
 // -------------------------------
 if (GLTFLoader) {
   const loader = new GLTFLoader();
@@ -258,12 +371,12 @@ if (GLTFLoader) {
 
       root.traverse((obj) => {
         if (obj.isMesh) {
+          cityMesh = obj; // last mesh; fine if it's a single mesh GLB
           obj.castShadow = false;
           obj.receiveShadow = false;
         }
       });
 
-      // Compute bounding box in world space
       root.updateWorldMatrix(true, true);
       const bbox = new THREE.Box3().setFromObject(root);
       const size = new THREE.Vector3();
@@ -272,18 +385,18 @@ if (GLTFLoader) {
 
       boundsMin.copy(bbox.min);
       boundsMax.copy(bbox.max);
+      glbMaxSize = Math.max(size.x, size.y, size.z);
+      hasGlbBounds = true;
 
       console.log("GLB bounds:", boundsMin, boundsMax, "size:", size);
 
-      // --- 1) Snap field center to model center ---
+      // Snap field center to model center
       fieldCenter.copy(boundsCenter);
-
-      // Snap field position sliders to "center" (slider 0 → center)
       fieldPosXSlider.value = "0";
       fieldPosYSlider.value = "0";
       fieldPosZSlider.value = "0";
 
-      // --- 2) Snap both sources to model center ---
+      // Snap sources to model center
       source1XSlider.value = "0";
       source1YSlider.value = "0";
       source1ZSlider.value = "0";
@@ -291,13 +404,11 @@ if (GLTFLoader) {
       source2YSlider.value = "0";
       source2ZSlider.value = "0";
 
-      // Update source positions using new bounds & slider values
       updateSource1FromSliders();
       updateSource2FromSliders();
 
-      // --- 3) Let field size sliders extend over the entire model ---
-      // Ensure slider max covers at least the full bbox extent on each axis
-      const minSize = 0.5; // don't go too tiny
+      // Allow field size sliders to cover entire model
+      const minSize = 0.5;
       fieldSizeXSlider.min = String(minSize);
       fieldSizeYSlider.min = String(minSize);
       fieldSizeZSlider.min = String(minSize);
@@ -306,16 +417,15 @@ if (GLTFLoader) {
       fieldSizeYSlider.max = String(Math.max(size.y, minSize));
       fieldSizeZSlider.max = String(Math.max(size.z, minSize));
 
-      // Set initial size to cover the whole model on each axis
       fieldSizeXSlider.value = String(size.x);
       fieldSizeYSlider.value = String(size.y);
       fieldSizeZSlider.value = String(size.z);
 
-      // Update field size from sliders
       updateFieldSizeFromSliders();
 
       // Rebuild point cloud with new center, bounds, and size
       buildPointCloud();
+      scheduleOcclusionRecompute();
       updateLabels();
     },
     undefined,
@@ -403,38 +513,95 @@ function updateLabels() {
 densitySlider.addEventListener("input", () => {
   densitySliderVal = Number(densitySlider.value);
   buildPointCloud();
+  scheduleOcclusionRecompute();
   updateLabels();
 });
 
-fieldPosXSlider.addEventListener("input", () => { updateFieldCenterFromSliders(); buildPointCloud(); updateLabels(); });
-fieldPosYSlider.addEventListener("input", () => { updateFieldCenterFromSliders(); buildPointCloud(); updateLabels(); });
-fieldPosZSlider.addEventListener("input", () => { updateFieldCenterFromSliders(); buildPointCloud(); updateLabels(); });
+fieldPosXSlider.addEventListener("input", () => {
+  updateFieldCenterFromSliders();
+  buildPointCloud();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+fieldPosYSlider.addEventListener("input", () => {
+  updateFieldCenterFromSliders();
+  buildPointCloud();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+fieldPosZSlider.addEventListener("input", () => {
+  updateFieldCenterFromSliders();
+  buildPointCloud();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
 
-fieldSizeXSlider.addEventListener("input", () => { updateFieldSizeFromSliders(); buildPointCloud(); updateLabels(); });
-fieldSizeYSlider.addEventListener("input", () => { updateFieldSizeFromSliders(); buildPointCloud(); updateLabels(); });
-fieldSizeZSlider.addEventListener("input", () => { updateFieldSizeFromSliders(); buildPointCloud(); updateLabels(); });
+fieldSizeXSlider.addEventListener("input", () => {
+  updateFieldSizeFromSliders();
+  buildPointCloud();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+fieldSizeYSlider.addEventListener("input", () => {
+  updateFieldSizeFromSliders();
+  buildPointCloud();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+fieldSizeZSlider.addEventListener("input", () => {
+  updateFieldSizeFromSliders();
+  buildPointCloud();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
 
 freq1Slider.addEventListener("input", () => {
   freq1SliderVal = Number(freq1Slider.value);
   freq1 = mapSliderToFrequency(freq1SliderVal);
+  scheduleOcclusionRecompute(); // attenuation depends on lambda
   updateLabels();
 });
 
 freq2Slider.addEventListener("input", () => {
   freq2SliderVal = Number(freq2Slider.value);
   freq2 = mapSliderToFrequency(freq2SliderVal);
+  scheduleOcclusionRecompute();
   updateLabels();
 });
 
-source1XSlider.addEventListener("input", () => { updateSource1FromSliders(); updateLabels(); });
-source1YSlider.addEventListener("input", () => { updateSource1FromSliders(); updateLabels(); });
-source1ZSlider.addEventListener("input", () => { updateSource1FromSliders(); updateLabels(); });
+source1XSlider.addEventListener("input", () => {
+  updateSource1FromSliders();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+source1YSlider.addEventListener("input", () => {
+  updateSource1FromSliders();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+source1ZSlider.addEventListener("input", () => {
+  updateSource1FromSliders();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
 
-source2XSlider.addEventListener("input", () => { updateSource2FromSliders(); updateLabels(); });
-source2YSlider.addEventListener("input", () => { updateSource2FromSliders(); updateLabels(); });
-source2ZSlider.addEventListener("input", () => { updateSource2FromSliders(); updateLabels(); });
+source2XSlider.addEventListener("input", () => {
+  updateSource2FromSliders();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+source2YSlider.addEventListener("input", () => {
+  updateSource2FromSliders();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
+source2ZSlider.addEventListener("input", () => {
+  updateSource2FromSliders();
+  scheduleOcclusionRecompute();
+  updateLabels();
+});
 
-// Initial setup (before GLB bounds override)
+// Initial setup (before GLB override)
 updateFieldCenterFromSliders();
 updateFieldSizeFromSliders();
 updateSource1FromSliders();
