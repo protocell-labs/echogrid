@@ -415,7 +415,7 @@ function buildPointCloud() {
       uOmega1: { value: 1.0 },
       uK2: { value: 1.0 },
       uOmega2: { value: 1.0 },
-      uPointSize: { value: 3.0 }
+      uPointSize: { value: 2.0 }
     },
     vertexShader,
     fragmentShader,

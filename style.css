@@ -3,7 +3,7 @@
    overflow: hidden;
    background: black;
    color: red;
-   font-family: sans-serif;
+   font-family: monospace;
  }
 
  #ui {
@@ -14,7 +14,7 @@
    background: rgba(0, 0, 0, 0.75);
    border-radius: 8px;
    z-index: 9999;
-   font-size: 12px;
+   font-size: 10px;
    line-height: 1.4;
    max-width: 300px;
    box-shadow: 0 0 8px rgba(0, 0, 0, 0.7);
@@ -185,7 +185,7 @@
    z-index: 99999;
    pointer-events: none;
    /* allows clicking through */
-   background: rgba(0, 0, 0, 0.75);
+   background: rgba(0, 0, 0, 1.00);
    /* black background */
    padding: 2px 8px;
    /* spacing around text */
@@ -193,7 +193,7 @@
 
  #creditOverlay {
    position: absolute;
-   bottom: 12px;
+   bottom: 24px;
    left: 50%;
    transform: translateX(-50%);
    color: red;
@@ -201,7 +201,24 @@
    opacity: 1.0;
    z-index: 99999;
    pointer-events: none;
-   background: rgba(0, 0, 0, 0.75);
+   background: rgba(0, 0, 0, 1.00);
+   /* black background */
+   padding: 2px 8px;
+   /* spacing around text */
+ }
+
+
+ #disclaimerOverlay {
+   position: absolute;
+   bottom: 6px;
+   left: 50%;
+   transform: translateX(-50%);
+   color: red;
+   font-size: 10px;
+   opacity: 1.0;
+   z-index: 99999;
+   pointer-events: none;
+   background: rgba(0, 0, 0, 1.00);
    /* black background */
    padding: 2px 8px;
    /* spacing around text */
