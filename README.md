@@ -1,14 +1,75 @@
-# Interference City
+# ECHOGRID – Urban-Scale Radio Wave Visualizer
+
+**ECHOGRID** is an interactive, WebGL-powered electromagnetic wave visualizer that simulates **radio wave interference** inside a 3D urban environment. The app loads a GLB model of a Hong Kong block section and visualizes how multiple electromagnetic emitters interfere through 3D space.
+
+This project is a design prototype built with **Three.js** and **custom GLSL shaders**, developed during the Junction Utopia & Dystopia 2025 hackathon in Espoo, Finland.
+
+🌐 **Live demo:** *(GitHub Pages link – placeholder)*
 
 
-Interactive radio-wave visualizer on an urban scale.
+## Features
 
 
+* **3D electromagnetic interference field**
 
+  * Fully real-time wave superposition using GPU shaders
+  * Adjustable emitter positions, frequencies, and motion
+  * Dense volumetric point cloud simulation
+
+* **Interactive UI**
+
+  * Control field size, density, source positions, and frequency in real time
+  * Automatic source movement with wandering behavior
+  * Multiple rendering modes (solid grid, wire grid, point field)
+
+* **Urban-scale context**
+
+  * Loads a **GLB model** of a Hong Kong building block
+  * Scene navigation via OrbitControls
+
+* **Custom wave physics**
+
+  * Simple propagation model
+  * Frequency-dependent phase and wavelength
+  * Per-point height and color based on interference amplitude
+
+
+## Not Implemented Yet
+
+* **Obstacle occlusion / wave shadowing**
+  The simulation currently ignores geometry collisions.
+  Implementing real wave–geometry interaction is a planned future step.
+
+
+## Technologies Used
+
+* **Three.js** (renderer, camera, OrbitControls, GLB loading)
+* **GLSL compute-style point shaders** (wave simulation)
+* **WebGL 2**
+* **GitHub Pages** for deployment
+* **ChatGPT 5.1** as a coding and editing aid
+
+
+## Running Locally
+
+No build step needed.
+
+```
+git clone <repo>
+cd <repo>
+python3 -m http.server
+```
+
+Then open:
+
+```
+http://localhost:8000
+```
 
 
 ## Resources
 
+Following resources were used to help build this project.
 
 [Three-Dimensional Ray-Tracing-Based Propagation Prediction Model for Macrocellular Environment at Sub-6 GHz Frequencies - article](https://www.mdpi.com/2079-9292/13/8/1451)
 
@@ -31,3 +92,8 @@ Interactive radio-wave visualizer on an urban scale.
 [Real-Time Electromagnetic Wave Simulator - YouTube](https://youtu.be/QlmfpFVq9Zo)
 
 [A decade of WiFi - article](https://jasmcole.com/2024/10/18/a-decade-of-wifi/)
+
+
+## License and copyright
+
+MIT License (see LICENSE file). Copyright (c) 2025 {protocell:labs}
