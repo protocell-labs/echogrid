@@ -10,6 +10,8 @@ import { ShaderPass } from 'ShaderPass';
 
 
 
+
+
 // ---------- Basic three.js setup ----------
 const container = document.getElementById('app');
 
@@ -17,176 +19,220 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 
-const BG_COLOR = 0x05070a; // dark background for main scene
+const BG_COLOR = 0x05070a;
 renderer.setClearColor(BG_COLOR, 1.0);
-
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(
-    45,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    100
+  45,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  200
 );
-camera.position.set(0, 6, 10);
+camera.position.set(0, 0, 14);
 camera.lookAt(0, 0, 0);
 
-// Simple light (mainly for the grid; the points use a custom shader)
+// simple lights (mainly for the grid; points use custom shader)
 const light = new THREE.DirectionalLight(0xffffff, 1.0);
 light.position.set(5, 10, 5);
 scene.add(light);
 scene.add(new THREE.AmbientLight(0x404040));
 
-// ---------- Simulation settings ----------
-const SIM_SIZE = 128;
-const PLANE_SIZE = 10; // world-space size of the simulated area
+// ---------- Simulation parameters ----------
+const SIM_SIZE   = 64;     // horizontal resolution per layer
+const NUM_LAYERS = 64;       // vertical slices
+const TEX_HEIGHT = SIM_SIZE * NUM_LAYERS; // stacked texture height
 
-// Render target options
+const PLANE_SIZE    = 12;   // horizontal world size
+const LAYER_SPACING = 0.1;  // world-space distance between layers
+
+// ---------- Render targets ----------
 const rtOptions = {
-    wrapS: THREE.ClampToEdgeWrapping,
-    wrapT: THREE.ClampToEdgeWrapping,
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter,
-    type: THREE.FloatType,
-    depthBuffer: false,
-    stencilBuffer: false,
+  wrapS: THREE.ClampToEdgeWrapping,
+  wrapT: THREE.ClampToEdgeWrapping,
+  minFilter: THREE.NearestFilter,
+  magFilter: THREE.NearestFilter,
+  type: THREE.FloatType,
+  depthBuffer: false,
+  stencilBuffer: false,
 };
 
-// Three RTs to avoid feedback loops:
-// rtCurr: u^t, rtPrev: u^{t-1}, rtTemp: u^{t+1}
-let rtCurr = new THREE.WebGLRenderTarget(SIM_SIZE, SIM_SIZE, rtOptions);
-let rtPrev = new THREE.WebGLRenderTarget(SIM_SIZE, SIM_SIZE, rtOptions);
-let rtTemp = new THREE.WebGLRenderTarget(SIM_SIZE, SIM_SIZE, rtOptions);
+let rtCurr   = new THREE.WebGLRenderTarget(SIM_SIZE, TEX_HEIGHT, rtOptions);
+let rtPrev   = new THREE.WebGLRenderTarget(SIM_SIZE, TEX_HEIGHT, rtOptions);
+let rtTemp   = new THREE.WebGLRenderTarget(SIM_SIZE, TEX_HEIGHT, rtOptions);
+let sourceRT = new THREE.WebGLRenderTarget(SIM_SIZE, TEX_HEIGHT, rtOptions);
 
-// RT for impulses / sources
-let sourceRT = new THREE.WebGLRenderTarget(SIM_SIZE, SIM_SIZE, rtOptions);
-
-// Helper: clear a render target to black (no source, no height)
+// clear helper
 function clearRT(rt) {
-    renderer.setRenderTarget(rt);
-    renderer.setClearColor(0x000000, 1.0); // IMPORTANT: pure black for simulation data
-    renderer.clear();
-    renderer.setRenderTarget(null);
-    renderer.setClearColor(BG_COLOR, 1.0); // restore scene background
+  renderer.setRenderTarget(rt);
+  renderer.setClearColor(0x000000, 1.0); // pure black = no displacement/source
+  renderer.clear();
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(BG_COLOR, 1.0);
 }
 
-// Initialize all simulation RTs to zero
 clearRT(rtCurr);
 clearRT(rtPrev);
 clearRT(rtTemp);
 clearRT(sourceRT);
 
 // ---------- Simulation quad (compute pass) ----------
-const simScene = new THREE.Scene();
+const simScene  = new THREE.Scene();
 const simCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
 const simMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-        u_prev: { value: rtCurr.texture }, // u^t
-        u_prevPrev: { value: rtPrev.texture }, // u^{t-1}
-        u_sources: { value: sourceRT.texture },
-        u_resolution: { value: new THREE.Vector2(SIM_SIZE, SIM_SIZE) },
-        u_c: { value: 0.3 },   // wave speed (lower = more stable)
-        u_damping: { value: 0.01 },  // damping factor
-    },
-    vertexShader: /* glsl */`
+  uniforms: {
+    u_prev:       { value: rtCurr.texture },           // u^t
+    u_prevPrev:   { value: rtPrev.texture },           // u^{t-1}
+    u_sources:    { value: sourceRT.texture },
+    u_resolution: { value: new THREE.Vector2(SIM_SIZE, TEX_HEIGHT) },
+    u_c:          { value: 0.25 },    // horizontal wave speed
+    u_cz:         { value: 0.25 },    // vertical coupling
+    u_damping:    { value: 0.01 },
+    u_layers:     { value: NUM_LAYERS },
+    u_gridSize:   { value: new THREE.Vector2(SIM_SIZE, SIM_SIZE) },
+  },
+  vertexShader: /* glsl */`
     varying vec2 vUv;
     void main() {
       vUv = uv;
       gl_Position = vec4(position, 1.0);
     }
   `,
-    fragmentShader: /* glsl */`
+  fragmentShader: /* glsl */`
     precision highp float;
 
     varying vec2 vUv;
     uniform sampler2D u_prev;
     uniform sampler2D u_prevPrev;
     uniform sampler2D u_sources;
-    uniform vec2 u_resolution;
+    uniform vec2 u_resolution; // (SIM_SIZE, TEX_HEIGHT)
+    uniform vec2 u_gridSize;   // (SIM_SIZE, SIM_SIZE)
     uniform float u_c;
+    uniform float u_cz;
     uniform float u_damping;
+    uniform float u_layers;
 
-    // Simple cross-shaped obstacle mask
-    float obstacleMask(vec2 p) {
+    // decode which layer this texel belongs to, and its local UV in that layer
+    void decodeLayer(in vec2 uv, out float layerIndex, out vec2 localUv) {
+      float L = u_layers;
+      float vScaled = uv.y * L;   // 0..L
+      layerIndex = floor(vScaled);
+      float vLocal = fract(vScaled);
+      localUv = vec2(uv.x, vLocal);
+    }
+
+    vec2 encodeLayer(float layerIndex, vec2 localUv) {
+      float L = u_layers;
+      float v = (layerIndex + localUv.y) / L;
+      return vec2(localUv.x, v);
+    }
+
+    // obstacle mask per layer (here: same cross in all layers, you can vary by layerIndex)
+    float obstacleMask(vec2 localUv, float layerIndex) {
       float m = 0.0;
-
-      // Vertical bar in the middle
-      if (p.x > 0.47 && p.x < 0.53 && p.y > 0.2 && p.y < 0.8) {
-        m = 1.0;
-      }
-
-      // Horizontal bar in the middle
-      if (p.y > 0.47 && p.y < 0.53 && p.x > 0.2 && p.x < 0.8) {
-        m = 1.0;
-      }
-
+      if (localUv.x > 0.47 && localUv.x < 0.53 && localUv.y > 0.2 && localUv.y < 0.8) m = 1.0;
+      if (localUv.y > 0.47 && localUv.y < 0.53 && localUv.x > 0.2 && localUv.x < 0.8) m = 1.0;
       return m;
     }
 
     void main() {
-      // Obstacles: pin displacement to 0.
-      float obs = obstacleMask(vUv);
+      float L = u_layers;
+
+      // which layer & local UV
+      float layerIndex;
+      vec2 localUv;
+      decodeLayer(vUv, layerIndex, localUv);
+
+      // obstacles: pin displacement to 0
+      float obs = obstacleMask(localUv, layerIndex);
       if (obs > 0.5) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
       }
 
-      vec2 texel = 1.0 / u_resolution;
+      // local texel size inside one slice (SIM_SIZE x SIM_SIZE)
+      vec2 texelLocal = 1.0 / u_gridSize;
+      float layerStepV = 1.0 / L;
 
-      float center = texture2D(u_prev, vUv).r;
-      float up     = texture2D(u_prev, vUv + vec2(0.0, texel.y)).r;
-      float down   = texture2D(u_prev, vUv - vec2(0.0, texel.y)).r;
-      float left   = texture2D(u_prev, vUv - vec2(texel.x, 0.0)).r;
-      float right  = texture2D(u_prev, vUv + vec2(texel.x, 0.0)).r;
+      // sample center from stacked texture
+      vec2 uvCenter = encodeLayer(layerIndex, localUv);
+      float center = texture2D(u_prev, uvCenter).r;
 
-      float lap = (up + down + left + right - 4.0 * center);
+      // neighbors in x/y within the SAME layer
+      vec2 localUp    = localUv + vec2(0.0, texelLocal.y);
+      vec2 localDown  = localUv - vec2(0.0, texelLocal.y);
+      vec2 localLeft  = localUv - vec2(texelLocal.x, 0.0);
+      vec2 localRight = localUv + vec2(texelLocal.x, 0.0);
 
-      float prevPrev = texture2D(u_prevPrev, vUv).r;
-      float src      = texture2D(u_sources, vUv).r;
+      localUp.y    = clamp(localUp.y,    0.0, 1.0);
+      localDown.y  = clamp(localDown.y,  0.0, 1.0);
+      localLeft.x  = clamp(localLeft.x,  0.0, 1.0);
+      localRight.x = clamp(localRight.x, 0.0, 1.0);
 
-      // Discrete wave equation with damping
+      float up    = texture2D(u_prev, encodeLayer(layerIndex, localUp)).r;
+      float down  = texture2D(u_prev, encodeLayer(layerIndex, localDown)).r;
+      float left  = texture2D(u_prev, encodeLayer(layerIndex, localLeft)).r;
+      float right = texture2D(u_prev, encodeLayer(layerIndex, localRight)).r;
+
+      float lapXY = (up + down + left + right - 4.0 * center);
+
+      // vertical neighbors (between layers)
+      float lapZ = 0.0;
+      if (layerIndex > 0.0) {
+        vec2 uvBelow = uvCenter - vec2(0.0, layerStepV);
+        lapZ += texture2D(u_prev, uvBelow).r;
+      } else {
+        lapZ += center; // boundary condition
+      }
+      if (layerIndex < L - 1.0) {
+        vec2 uvAbove = uvCenter + vec2(0.0, layerStepV);
+        lapZ += texture2D(u_prev, uvAbove).r;
+      } else {
+        lapZ += center; // boundary condition
+      }
+      lapZ -= 2.0 * center;
+
+      float prevPrev = texture2D(u_prevPrev, uvCenter).r;
+      float src      = texture2D(u_sources, uvCenter).r;
+
       float next = (2.0 - u_damping) * center
                  - (1.0 - u_damping) * prevPrev
-                 + u_c * u_c * lap
+                 + u_c  * u_c  * lapXY
+                 + u_cz * u_cz * lapZ
                  + src;
 
-      // Clamp to avoid runaway blowups from numerical noise
       next = clamp(next, -5.0, 5.0);
-
       gl_FragColor = vec4(next, 0.0, 0.0, 1.0);
     }
   `
 });
 
-const simQuad = new THREE.Mesh(
-    new THREE.PlaneGeometry(2, 2),
-    simMaterial
-);
+const simQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), simMaterial);
 simScene.add(simQuad);
 
-// ---------- Source drawing quad ----------
+// ---------- Source drawing quad (impulses into atlas) ----------
 const sourceScene = new THREE.Scene();
 const sourceMaterial = new THREE.ShaderMaterial({
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthTest: false,
-    depthWrite: false,
-    uniforms: {
-        u_center: { value: new THREE.Vector2(0.5, 0.5) },
-        u_radius: { value: 0.02 },
-        u_strength: { value: 2.0 },
-    },
-    vertexShader: /* glsl */`
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthTest: false,
+  depthWrite: false,
+  uniforms: {
+    u_center:   { value: new THREE.Vector2(0.5, 0.5) }, // atlas UV
+    u_radius:   { value: 0.03 },                        // radius in UV space
+    u_strength: { value: 2.0 },
+  },
+  vertexShader: /* glsl */`
     varying vec2 vUv;
     void main() {
       vUv = uv;
       gl_Position = vec4(position, 1.0);
     }
   `,
-    fragmentShader: /* glsl */`
+  fragmentShader: /* glsl */`
     precision highp float;
     varying vec2 vUv;
     uniform vec2 u_center;
@@ -201,205 +247,206 @@ const sourceMaterial = new THREE.ShaderMaterial({
   `
 });
 
-const sourceQuad = new THREE.Mesh(
-    new THREE.PlaneGeometry(2, 2),
-    sourceMaterial
-);
+const sourceQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), sourceMaterial);
 sourceScene.add(sourceQuad);
 
-// Pending impulses for this frame
-const pendingSources = [];
+const pendingSources = []; // { uvx, uvy, layer, strength, radius }
 
-// ---------- Point cloud visualization ----------
-
-// Build a grid of points matching the simulation resolution
+// ---------- Point-cloud visualization over all layers ----------
 const pointGeometry = new THREE.BufferGeometry();
-const num = SIM_SIZE;
-const positions = new Float32Array(num * num * 3);
-const uvs = new Float32Array(num * num * 2);
+const positions = [];
+const uvs = [];
+const layers = [];
 
-let i3 = 0, i2 = 0;
-for (let y = 0; y < num; y++) {
-    for (let x = 0; x < num; x++) {
-        const u = x / (num - 1);
-        const v = y / (num - 1);
+for (let k = 0; k < NUM_LAYERS; k++) {
+  const yOffset = (k - (NUM_LAYERS - 1) / 2) * LAYER_SPACING;
+  for (let y = 0; y < SIM_SIZE; y++) {
+    for (let x = 0; x < SIM_SIZE; x++) {
+      const u = x / (SIM_SIZE - 1);
+      const v = y / (SIM_SIZE - 1);
 
-        const posX = (u - 0.5) * PLANE_SIZE;
-        const posZ = (v - 0.5) * PLANE_SIZE;
+      const posX = (u - 0.5) * PLANE_SIZE;
+      const posZ = (v - 0.5) * PLANE_SIZE;
 
-        positions[i3++] = posX;
-        positions[i3++] = 0.0;  // y will be displaced by height
-        positions[i3++] = posZ;
-
-        uvs[i2++] = u;
-        uvs[i2++] = v;
+      positions.push(posX, yOffset, posZ);
+      uvs.push(u, v);
+      layers.push(k);
     }
+  }
 }
 
-pointGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-pointGeometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+pointGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+pointGeometry.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs, 2));
+pointGeometry.setAttribute('layer',    new THREE.Float32BufferAttribute(layers, 1));
 
 const pointsMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-        u_heightMap: { value: rtCurr.texture },
-        u_amplitude: { value: 1.0 },
-        u_pointSize: { value: 0.25 },
-    },
-    vertexShader: /* glsl */`
+  uniforms: {
+    u_heightMap: { value: rtCurr.texture },
+    u_amplitude: { value: 0.7 },
+    u_pointSize: { value: 0.22 },
+    u_layers:    { value: NUM_LAYERS },
+  },
+  vertexShader: /* glsl */`
     uniform sampler2D u_heightMap;
     uniform float u_amplitude;
     uniform float u_pointSize;
+    uniform float u_layers;
+
+    attribute float layer;
 
     varying float vHeight;
 
     void main() {
-      vec2 vUv = uv;
-      float h = texture2D(u_heightMap, vUv).r;
+      float L = u_layers;
+      vec2 localUv = uv; // 0..1 inside slice
+
+      // UV inside stacked atlas
+      float vAtlas = (layer + localUv.y) / L;
+      vec2 sampleUv = vec2(localUv.x, vAtlas);
+
+      float h = texture2D(u_heightMap, sampleUv).r;
       vHeight = h;
 
-      // Displace vertically by height
-      vec3 displaced = vec3(position.x, position.y + h * u_amplitude, position.z);
+      vec3 displaced = vec3(position.x,
+                            position.y + h * u_amplitude,
+                            position.z);
+
       vec4 worldPos = modelMatrix * vec4(displaced, 1.0);
       gl_Position = projectionMatrix * viewMatrix * worldPos;
 
       float dist = length(worldPos.xyz - cameraPosition);
-      gl_PointSize = u_pointSize * (1.0 / dist) * 50.0;
+      gl_PointSize = u_pointSize * (1.0 / dist) * 80.0;
     }
   `,
-    fragmentShader: /* glsl */`
+  fragmentShader: /* glsl */`
     precision highp float;
     varying float vHeight;
 
     void main() {
-      // Circular points
       vec2 c = gl_PointCoord - 0.5;
       if (dot(c, c) > 0.25) discard;
 
       float h = vHeight;
 
-      // Symmetric blue–white–red map
-      // h < 0 -> blue, h > 0 -> red, around 0 -> white-ish
+      // red–white–blue symmetric map
       float t = clamp(h * 1.5 + 0.5, 0.0, 1.0);
-
       vec3 blue  = vec3(0.1, 0.2, 0.9);
       vec3 white = vec3(1.0, 1.0, 1.0);
       vec3 red   = vec3(1.0, 0.2, 0.1);
 
-      // Blend via white in the middle
-      vec3 midColor = mix(blue, white, smoothstep(0.0, 0.5, t));
+      vec3 midColor = mix(blue,  white, smoothstep(0.0, 0.5, t));
       vec3 color    = mix(midColor, red, smoothstep(0.5, 1.0, t));
 
       gl_FragColor = vec4(color, 1.0);
     }
   `,
-    depthTest: true,
-    depthWrite: true,
+  depthTest: true,
+  depthWrite: true,
 });
-
-
 const points = new THREE.Points(pointGeometry, pointsMaterial);
 scene.add(points);
 
-// Optional: a simple grid to see scale
+// optional grid on bottom layer
+const bottomLayerY = (0 - (NUM_LAYERS - 1) / 2) * LAYER_SPACING;
 const grid = new THREE.GridHelper(PLANE_SIZE, 20, 0x444444, 0x222222);
+grid.position.y = bottomLayerY;
 scene.add(grid);
 
-// ---------- Invisible click plane for raycasting ----------
-
+// ---------- Invisible plane for click-to-emit on bottom layer ----------
 const clickPlaneGeom = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
 const clickPlaneMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.0,   // invisible, but still raycast-able
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0.0,
 });
 const clickPlane = new THREE.Mesh(clickPlaneGeom, clickPlaneMat);
 clickPlane.rotation.x = -Math.PI / 2;
+clickPlane.position.y = bottomLayerY;
 scene.add(clickPlane);
 
-// ---------- Raycaster for click-to-emit ----------
+// ---------- Raycaster / input ----------
 const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
+const pointer   = new THREE.Vector2();
 
 function onPointerDown(event) {
-    const rect = renderer.domElement.getBoundingClientRect();
-    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = - ((event.clientY - rect.top) / rect.height) * 2 + 1;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
-    raycaster.setFromCamera(pointer, camera);
-    const intersects = raycaster.intersectObject(clickPlane);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObject(clickPlane);
 
-    if (intersects.length > 0) {
-        const uv = intersects[0].uv; // [0,1]x[0,1] on the plane
+  if (hits.length > 0) {
+    const uv = hits[0].uv; // 0..1
+    // fix orientation (mirroring) to match sim grid
+    const uvx = uv.x;
+    const uvy = 1.0 - uv.y;
 
-        // Flip both axes to match how the simulation grid is laid out
-        const uvx = uv.x;
-        const uvy = 1.0 - uv.y;
-
-        pendingSources.push({
-            uvx,
-            uvy,
-            strength: 3.0,
-            radius: 0.03,
-        });
-    }
-
+    pendingSources.push({
+      uvx,
+      uvy,
+      layer: 0,          // bottom layer
+      strength: 1.0,
+      radius: 0.02,
+    });
+  }
 }
 
 renderer.domElement.addEventListener('pointerdown', onPointerDown);
 
 // ---------- Simulation step ----------
 function stepSimulation() {
-    // 1) Clear sourceRT to pure black (no background bias!)
-    renderer.setRenderTarget(sourceRT);
-    renderer.setClearColor(0x000000, 1.0);
-    renderer.clear();
+  // 1) clear sources atlas
+  renderer.setRenderTarget(sourceRT);
+  renderer.setClearColor(0x000000, 1.0);
+  renderer.clear();
 
-    // 2) Draw all pending sources into sourceRT (additive)
-    for (const src of pendingSources) {
-        sourceMaterial.uniforms.u_center.value.set(src.uvx, src.uvy);
-        sourceMaterial.uniforms.u_strength.value = src.strength;
-        sourceMaterial.uniforms.u_radius.value = src.radius;
-        renderer.render(sourceScene, simCamera);
-    }
-    pendingSources.length = 0; // impulses are one-frame
+  // 2) write impulses for this frame
+  for (const src of pendingSources) {
+    const vAtlas = (src.layer + src.uvy) / NUM_LAYERS; // local->atlas
+    sourceMaterial.uniforms.u_center.value.set(src.uvx, vAtlas);
+    sourceMaterial.uniforms.u_radius.value   = src.radius;
+    sourceMaterial.uniforms.u_strength.value = src.strength;
+    renderer.render(sourceScene, simCamera);
+  }
+  pendingSources.length = 0;
 
-    renderer.setRenderTarget(null);
-    renderer.setClearColor(BG_COLOR, 1.0); // restore main background
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(BG_COLOR, 1.0);
 
-    // 3) Run compute shader:
-    //    read from rtCurr (u^t) and rtPrev (u^{t-1}), write into rtTemp (u^{t+1})
-    simMaterial.uniforms.u_prev.value = rtCurr.texture;
-    simMaterial.uniforms.u_prevPrev.value = rtPrev.texture;
+  // 3) run compute: rtCurr & rtPrev -> rtTemp
+  simMaterial.uniforms.u_prev.value     = rtCurr.texture;
+  simMaterial.uniforms.u_prevPrev.value = rtPrev.texture;
 
-    renderer.setRenderTarget(rtTemp);
-    renderer.render(simScene, simCamera);
-    renderer.setRenderTarget(null);
+  renderer.setRenderTarget(rtTemp);
+  renderer.render(simScene, simCamera);
+  renderer.setRenderTarget(null);
 
-    // 4) Rotate targets: newPrev = oldCurr, newCurr = rtTemp
-    const oldPrev = rtPrev;
-    rtPrev = rtCurr;
-    rtCurr = rtTemp;
-    rtTemp = oldPrev;
+  // 4) rotate buffers
+  const oldPrev = rtPrev;
+  rtPrev = rtCurr;
+  rtCurr = rtTemp;
+  rtTemp = oldPrev;
 
-    // 5) Update visualization height map for the points
-    pointsMaterial.uniforms.u_heightMap.value = rtCurr.texture;
+  // 5) update visualization
+  pointsMaterial.uniforms.u_heightMap.value = rtCurr.texture;
 }
 
-// ---------- Resize handling ----------
+// ---------- Resize ----------
 function onWindowResize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
 }
 window.addEventListener('resize', onWindowResize);
 
-// ---------- Animation loop ----------
+// ---------- Loop ----------
 function animate() {
-    requestAnimationFrame(animate);
-    stepSimulation();
-    renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+  stepSimulation();
+  renderer.render(scene, camera);
 }
 
 animate();
