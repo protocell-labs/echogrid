@@ -627,9 +627,9 @@ const source2YSlider = document.getElementById("source2YSlider");
 const source2ZSlider = document.getElementById("source2ZSlider");
 
 const freq3Slider = document.getElementById("freq3Slider");
-const source3XSlider = document.getElementById("source2XSlider");
-const source3YSlider = document.getElementById("source2YSlider");
-const source3ZSlider = document.getElementById("source2ZSlider");
+const source3XSlider = document.getElementById("source3XSlider");
+const source3YSlider = document.getElementById("source3YSlider");
+const source3ZSlider = document.getElementById("source3ZSlider");
 
 const source1AutoToggle = document.getElementById("source1AutoToggle");
 const source2AutoToggle = document.getElementById("source2AutoToggle");
@@ -772,6 +772,12 @@ freq1Slider.addEventListener("input", () => {
 freq2Slider.addEventListener("input", () => {
   freq2SliderVal = Number(freq2Slider.value);
   freq2 = mapSliderToFrequency(freq2SliderVal);
+  updateLabels();
+});
+
+freq3Slider.addEventListener("input", () => {
+  freq3SliderVal = Number(freq3Slider.value);
+  freq3 = mapSliderToFrequency(freq3SliderVal);
   updateLabels();
 });
 
