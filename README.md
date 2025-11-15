@@ -29,3 +29,5 @@ Interactive radio-wave visualizer on an urban scale.
 [WiThRay: A Versatile Ray-Tracing Simulator for Smart Wireless Environments - article](https://arxiv.org/pdf/2304.11385)
 
 [Real-Time Electromagnetic Wave Simulator - YouTube](https://youtu.be/QlmfpFVq9Zo)
+
+[A decade of WiFi - article](https://jasmcole.com/2024/10/18/a-decade-of-wifi/)
