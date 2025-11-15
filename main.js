@@ -353,8 +353,8 @@ const fragmentShader = `
     float a = clamp(vAmplitude * 1.5, -1.0, 1.0);
     float r = max(0.0,  a);
     float b = max(0.0, -a);
-    float g = 0.2 * (1.0 - abs(a));
-    gl_FragColor = vec4(r, g, b, 1.0);
+    float alpha = abs(a);  
+    gl_FragColor = vec4(r, 0.0, b, alpha);
   }
 `;
 
@@ -409,8 +409,8 @@ function buildPointCloud() {
     },
     vertexShader,
     fragmentShader,
-    transparent: false,
-    depthTest: true
+    transparent: true,
+    depthWrite: false,
   });
 
   points = new THREE.Points(geometry, material);
