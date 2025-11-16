@@ -1,10 +1,12 @@
 # ECHOGRID – Urban-Scale Radio Wave Visualizer
 
+[![Watch the video](https://img.youtube.com/vi/Sk3Tj72p_X4/maxresdefault.jpg)](https://www.youtube.com/watch?v=Sk3Tj72p_X4)
+
 **ECHOGRID** is an interactive, WebGL-powered electromagnetic wave visualizer that simulates **radio wave interference** inside a 3D urban environment. The app loads a GLB model of a Hong Kong block section and visualizes how multiple electromagnetic emitters interfere through 3D space.
 
-This project is a design prototype built with **Three.js** and **custom GLSL shaders**, developed during the Junction Utopia & Dystopia 2025 hackathon in Espoo, Finland.
+This project is a design prototype built with **Three.js** and **custom GLSL shaders**, developed within 24h during the Junction Utopia & Dystopia 2025 hackathon in Espoo, Finland.
 
-🌐 [*Live demo*](https://protocell-labs.github.io/echogrid/)
+🌐 [*Live demo (hosted on GitHub Pages)*](https://protocell-labs.github.io/echogrid/)
 
 
 ## Features
