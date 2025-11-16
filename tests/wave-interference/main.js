@@ -31,10 +31,11 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   200
 );
-camera.position.set(0, 0, 14);
-camera.lookAt(0, 0, 0);
+camera.position.set(0, 8, 13);
+camera.lookAt(0, -1, 0);
 
 // ---------- Orbit Controls ----------
+/*
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;     // smooth movement
 controls.dampingFactor = 0.05;
@@ -43,6 +44,7 @@ controls.enablePan = false;        // optional: lock panning
 controls.minDistance = 5;
 controls.maxDistance = 60;
 controls.maxPolarAngle = Math.PI * 0.48;  // prevent camera going under scene
+*/
 
 
 // simple lights (mainly for the grid; points use custom shader)
@@ -52,8 +54,8 @@ scene.add(light);
 scene.add(new THREE.AmbientLight(0x404040));
 
 // ---------- Simulation parameters ----------
-const SIM_SIZE   = 64;     // horizontal resolution per layer
-const NUM_LAYERS = 64;       // vertical slices
+const SIM_SIZE   = 256;     // horizontal resolution per layer
+const NUM_LAYERS = 1;       // vertical slices
 const TEX_HEIGHT = SIM_SIZE * NUM_LAYERS; // stacked texture height
 
 const PLANE_SIZE    = 12;   // horizontal world size
@@ -457,7 +459,7 @@ window.addEventListener('resize', onWindowResize);
 function animate() {
   requestAnimationFrame(animate);
   stepSimulation();
-  controls.update(); 
+  //controls.update(); 
   renderer.render(scene, camera);
 }
 
